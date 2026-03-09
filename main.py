@@ -1,4 +1,5 @@
 import yfinance as yf
+import pandas as pd
 import asyncio
 import os
 from telegram import Bot
@@ -20,36 +21,45 @@ def run_server():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
+def get_indicators(df):
+    close = df['Close']
+    ema200 = close.ewm(span=200, adjust=False).mean()
+    delta = close.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    return ema200, rsi
+
 async def get_signals():
     all_signals = []
     try:
-        # Batch Request to Yahoo Finance
-        data = yf.download(PAIRS, period='2d', interval='5m', group_by='ticker', progress=False)
-        
+        data = yf.download(PAIRS, period='5d', interval='5m', group_by='ticker', progress=False)
         for symbol in PAIRS:
             df = data[symbol]
-            if df.empty or len(df) < 20: continue
+            if df.empty or len(df) < 200: continue
             
-            close = df['Close']
-            ma20 = close.rolling(20).mean().iloc[-1]
-            curr = float(close.iloc[-1])
+            ema200, rsi = get_indicators(df)
+            curr = float(df['Close'].iloc[-1])
             name = symbol.replace('=X', '')
             
-            entry_time = datetime.now().strftime('%H:%M:%S')
-            close_time = (datetime.now() + timedelta(minutes=5)).strftime('%H:%M:%S')
-            
-            # Logic: Mean Reversion
-            if curr < (ma20 * 0.998):
+            # উইন চান্স ক্যালকুলেশন (সহজ লজিক)
+            score = 65 # বেস চান্স
+            if abs(curr - ema200.iloc[-1]) > 0.001: score += 10
+            if rsi.iloc[-1] < 25 or rsi.iloc[-1] > 75: score += 10
+            win_chance = min(score, 95)
+
+            if curr > ema200.iloc[-1] and rsi.iloc[-1] < 30:
                 msg = (f"💎 **MARKET SIGNAL**\n━━━━━━━━━━━━━━\n"
-                       f"🔹 Pair: {name}\n🔹 Type: 🟢 BUY\n🔹 Timeframe: 5m\n"
-                       f"🔹 Entry Price: `{curr:.5f}`\n🔹 Entry Time: `{entry_time}`\n"
-                       f"🔹 Exp. Close: `{close_time}`\n━━━━━━━━━━━━━━")
+                       f"🔹 Pair: {name}\n🔹 Type: 🟢 BUY\n"
+                       f"🔹 Entry: `{curr:.5f}`\n🔹 Win Prob: `{win_chance}%`\n"
+                       f"🔹 RSI: `{rsi.iloc[-1]:.2f}`\n━━━━━━━━━━━━━━")
                 all_signals.append(msg)
-            elif curr > (ma20 * 1.002):
+            elif curr < ema200.iloc[-1] and rsi.iloc[-1] > 70:
                 msg = (f"💎 **MARKET SIGNAL**\n━━━━━━━━━━━━━━\n"
-                       f"🔹 Pair: {name}\n🔹 Type: 🔴 SELL\n🔹 Timeframe: 5m\n"
-                       f"🔹 Entry Price: `{curr:.5f}`\n🔹 Entry Time: `{entry_time}`\n"
-                       f"🔹 Exp. Close: `{close_time}`\n━━━━━━━━━━━━━━")
+                       f"🔹 Pair: {name}\n🔹 Type: 🔴 SELL\n"
+                       f"🔹 Entry: `{curr:.5f}`\n🔹 Win Prob: `{win_chance}%`\n"
+                       f"🔹 RSI: `{rsi.iloc[-1]:.2f}`\n━━━━━━━━━━━━━━")
                 all_signals.append(msg)
     except Exception as e:
         print(f"Error: {e}")
@@ -57,7 +67,6 @@ async def get_signals():
 
 async def monitor():
     while True:
-        # ৫ মিনিট অন্তর চেক
         if datetime.now().minute % 5 == 0:
             sigs = await get_signals()
             for msg in sigs:
