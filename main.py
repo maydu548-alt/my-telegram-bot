@@ -1,7 +1,6 @@
 import yfinance as yf
 import asyncio
 import os
-import logging
 from telegram import Bot
 from flask import Flask
 from threading import Thread
@@ -13,7 +12,7 @@ CHAT_ID = '7995220028'
 bot = Bot(token=TELEGRAM_TOKEN)
 PAIRS = ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "EURJPY=X", "GBPJPY=X", "USDCAD=X", "EURGBP=X", "AUDJPY=X", "NZDUSD=X", "GBPAUD=X", "EURAUD=X"]
 
-# --- WEB SERVER (Render-এর জন্য) ---
+# --- WEB SERVER (Render Port Binding) ---
 app = Flask(__name__)
 @app.route('/')
 def home(): return "Bot is Online"
@@ -26,51 +25,38 @@ def run_server():
 async def get_signals():
     all_signals = []
     try:
-        # Batch download: সবগুলো একসাথে ডাউনলোড করলে ইয়াহু ব্লক করে না
-        data = yf.download(PAIRS, period='5d', interval='5m', group_by='ticker', progress=False)
+        # Batch Request to Yahoo Finance
+        data = yf.download(PAIRS, period='2d', interval='5m', group_by='ticker', progress=False)
         
         for symbol in PAIRS:
             df = data[symbol]
-            if df.empty or len(df) < 50: continue
+            if df.empty or len(df) < 20: continue
             
-            # Indicators
             close = df['Close']
-            ma20 = close.rolling(20).mean()
-            std20 = close.rolling(20).std()
-            upper = ma20 + (std20 * 2)
-            lower = ma20 - (std20 * 2)
-            
-            # RSI Calculation
-            delta = close.diff()
-            gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-            rsi = 100 - (100 / (1 + (gain / loss)))
-            
-            # Latest values
+            ma20 = close.rolling(20).mean().iloc[-1]
             curr = float(close.iloc[-1])
-            curr_rsi = rsi.iloc[-1]
-            
-            # Filter Logic
             name = symbol.replace('=X', '')
-            if curr < lower.iloc[-1] and curr_rsi < 35:
+            
+            # Logic: Bollinger-like Mean Reversion
+            if curr < (ma20 * 0.998):
                 all_signals.append(f"🟢 **{name}**: BUY @ `{curr:.5f}`")
-            elif curr > upper.iloc[-1] and curr_rsi > 65:
+            elif curr > (ma20 * 1.002):
                 all_signals.append(f"🔴 **{name}**: SELL @ `{curr:.5f}`")
     except Exception as e:
-        print(f"Fetch Error: {e}")
+        print(f"Error: {e}")
     return all_signals
 
-# --- MAIN LOOP ---
 async def monitor():
     while True:
         now = datetime.now()
-        if now.minute % 5 == 0 and now.second < 5:
+        # প্রতি ৫ মিনিট অন্তর চেক
+        if now.minute % 5 == 0 and now.second < 10:
             sigs = await get_signals()
             if sigs:
                 msg = f"💎 **MARKET SIGNAL - {now.strftime('%H:%M')}**\n━━━━━━━━━━━━━━\n"
-                await bot.send_message(CHAT_ID, msg + "\n".join(sigs), parse_mode='Markdown')
+                await bot.send_message(CHAT_ID, msg + "\n".join(sigs[:5]), parse_mode='Markdown')
             await asyncio.sleep(60)
-        await asyncio.sleep(1)
+        await asyncio.sleep(10)
 
 if __name__ == "__main__":
     Thread(target=run_server, daemon=True).start()
