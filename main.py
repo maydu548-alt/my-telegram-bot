@@ -34,6 +34,7 @@ def get_indicators(df):
 async def get_signals():
     all_signals = []
     try:
+        # Batch Request: ১টি রিকোয়েস্টে সব পেয়ার
         data = yf.download(PAIRS, period='5d', interval='5m', group_by='ticker', progress=False)
         for symbol in PAIRS:
             df = data[symbol]
@@ -43,26 +44,30 @@ async def get_signals():
             curr = float(df['Close'].iloc[-1])
             name = symbol.replace('=X', '')
             
-            # উইন চান্স ক্যালকুলেশন (সহজ লজিক)
-            score = 65 # বেস চান্স
+            # Win Chance (Probability Logic)
+            score = 65
             if abs(curr - ema200.iloc[-1]) > 0.001: score += 10
             if rsi.iloc[-1] < 25 or rsi.iloc[-1] > 75: score += 10
             win_chance = min(score, 95)
+            
+            entry_time = datetime.now().strftime('%H:%M:%S')
+            close_time = (datetime.now() + timedelta(minutes=5)).strftime('%H:%M:%S')
 
+            # Logic: Trend Filter (EMA200) + Momentum (RSI)
             if curr > ema200.iloc[-1] and rsi.iloc[-1] < 30:
                 msg = (f"💎 **MARKET SIGNAL**\n━━━━━━━━━━━━━━\n"
-                       f"🔹 Pair: {name}\n🔹 Type: 🟢 BUY\n"
-                       f"🔹 Entry: `{curr:.5f}`\n🔹 Win Prob: `{win_chance}%`\n"
-                       f"🔹 RSI: `{rsi.iloc[-1]:.2f}`\n━━━━━━━━━━━━━━")
+                       f"🔹 Pair: {name}\n🔹 Type: 🟢 BUY\n🔹 Price: `{curr:.5f}`\n"
+                       f"🔹 Win Chance: `{win_chance}%`\n🔹 RSI: `{rsi.iloc[-1]:.1f}`\n"
+                       f"🔹 Entry: `{entry_time}` | Close: `{close_time}`\n━━━━━━━━━━━━━━")
                 all_signals.append(msg)
             elif curr < ema200.iloc[-1] and rsi.iloc[-1] > 70:
                 msg = (f"💎 **MARKET SIGNAL**\n━━━━━━━━━━━━━━\n"
-                       f"🔹 Pair: {name}\n🔹 Type: 🔴 SELL\n"
-                       f"🔹 Entry: `{curr:.5f}`\n🔹 Win Prob: `{win_chance}%`\n"
-                       f"🔹 RSI: `{rsi.iloc[-1]:.2f}`\n━━━━━━━━━━━━━━")
+                       f"🔹 Pair: {name}\n🔹 Type: 🔴 SELL\n🔹 Price: `{curr:.5f}`\n"
+                       f"🔹 Win Chance: `{win_chance}%`\n🔹 RSI: `{rsi.iloc[-1]:.1f}`\n"
+                       f"🔹 Entry: `{entry_time}` | Close: `{close_time}`\n━━━━━━━━━━━━━━")
                 all_signals.append(msg)
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Fetch Error: {e}")
     return all_signals
 
 async def monitor():
