@@ -1,70 +1,80 @@
 import yfinance as yf
-import pandas as pd
 import asyncio
-import os
 from telegram import Bot
-from flask import Flask
-from threading import Thread
-from datetime import datetime, timedelta
+import datetime
+import pandas as pd
+import sys
 
-TOKEN = '8287022829:AAEJfSnbsAgnGqoFbNESwDMifQ9S5Gf9bJk'
+# --- CONFIGURATION ---
+TELEGRAM_TOKEN = '8287022829:AAEJfSnbsAgnGqoFbNESwDMifQ9S5Gf9bJk'
 CHAT_ID = '7995220028'
-bot = Bot(token=TOKEN)
+bot = Bot(token=TELEGRAM_TOKEN)
 PAIRS = ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "EURJPY=X", "GBPJPY=X", "USDCAD=X", "EURGBP=X", "AUDJPY=X", "NZDUSD=X", "GBPAUD=X", "EURAUD=X"]
 
-app = Flask(__name__)
-@app.route('/')
-def home(): return "Bot is Online"
-
-def run_server():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
-
-# প্রতিটি পেয়ারের নিজস্ব স্মার্ট লজিক
-def analyze_pair(df):
-    close = df['Close']
-    ema = close.ewm(span=50, adjust=False).mean() # ট্রেন্ডের জন্য
-    atr = (df['High'] - df['Low']).rolling(window=14).mean() # অস্থিরতা মাপার জন্য
-    rsi = 100 - (100 / (1 + close.diff().clip(lower=0).rolling(14).mean() / (-close.diff().clip(upper=0).rolling(14).mean())))
-    
-    curr = close.iloc[-1]
-    # লজিক: ট্রেন্ডের দিকে ট্রেড করা এবং অস্থিরতা কম থাকলে এন্ট্রি নেওয়া
-    if curr > ema.iloc[-1] and rsi.iloc[-1] < 40 and atr.iloc[-1] < (curr * 0.002):
-        return "BUY"
-    elif curr < ema.iloc[-1] and rsi.iloc[-1] > 60 and atr.iloc[-1] < (curr * 0.002):
-        return "SELL"
-    return None
-
-async def get_signals():
+async def get_top_signals():
     all_signals = []
-    try:
-        # Rate Limit এড়াতে ডাউনলোড মেথড অপ্টিমাইজড
-        data = yf.download(PAIRS, period='5d', interval='5m', group_by='ticker', progress=False)
-        for symbol in PAIRS:
-            df = data[symbol]
-            if df.empty or len(df) < 50: continue
+    
+    for symbol in PAIRS:
+        try:
+            # Rate limit এড়াতে ছোট বিরতি
+            await asyncio.sleep(1)
+            data = yf.download(symbol, interval='5m', period='2d', progress=False)
+            if len(data) < 50: continue
             
-            signal = analyze_pair(df)
-            if signal:
-                name = symbol.replace('=X', '')
-                msg = (f"💎 **{signal} SIGNAL**\n━━━━━━━━━━━━━━\n"
-                       f"🔹 Pair: {name}\n🔹 Price: `{df['Close'].iloc[-1]:.5f}`\n"
-                       f"🔹 Time: {datetime.now().strftime('%H:%M:%S')}\n━━━━━━━━━━━━━━")
-                all_signals.append(msg)
-    except Exception as e:
-        print(f"Error: {e}")
-    return all_signals
+            close = data['Close'].squeeze()
+            low = data['Low'].squeeze()
+            high = data['High'].squeeze()
+            
+            # Indicators
+            delta = close.diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rsi = 100 - (100 / (1 + (gain / loss))).iloc[-1]
+            
+            low_14 = low.rolling(window=14).min()
+            high_14 = high.rolling(window=14).max()
+            stoch_k = (100 * ((close - low_14) / (high_14 - low_14))).rolling(window=3).mean().iloc[-1]
+            
+            ma20 = close.rolling(window=20).mean()
+            std20 = close.rolling(window=20).std()
+            upper_bb = ma20 + (std20 * 2)
+            lower_bb = ma20 - (std20 * 2)
+            
+            current_price = float(close.iloc[-1])
+            pair_name = symbol.replace('=X', '')
 
-async def monitor():
+            win_rate = 70 
+            if rsi < 30 or rsi > 70: win_rate += 10
+            if stoch_k < 20 or stoch_k > 80: win_rate += 10
+
+            if current_price <= lower_bb.iloc[-1] * 1.0002 and rsi < 40 and stoch_k < 35:
+                all_signals.append({'pair': pair_name, 'yf': symbol, 'dir': 'CALL', 'acc': win_rate, 'price': current_price})
+            elif current_price >= upper_bb.iloc[-1] * 0.9998 and rsi > 60 and stoch_k > 65:
+                all_signals.append({'pair': pair_name, 'yf': symbol, 'dir': 'PUT', 'acc': win_rate, 'price': current_price})
+        except: continue
+    
+    all_signals.sort(key=lambda x: x['acc'], reverse=True)
+    return all_signals[:3]
+
+async def main():
+    print("🚀 TrixWin Ultimate v4.0 is Online!")
     while True:
-        # প্রতি ৫ মিনিট অন্তর চেক
-        if datetime.now().minute % 5 == 0:
-            sigs = await get_signals()
-            for msg in sigs:
-                await bot.send_message(CHAT_ID, msg, parse_mode='Markdown')
-            await asyncio.sleep(60)
-        await asyncio.sleep(10)
+        now = datetime.datetime.now()
+        # ৫ মিনিট পর পর ৫ সেকেন্ড আগে সিগন্যাল পাওয়ার জন্য
+        if now.minute % 5 == 4 and now.second >= 55:
+            top_signals = await get_top_signals()
+            if top_signals:
+                entry_time = datetime.datetime.now().strftime('%H:%M:%S')
+                close_time = (datetime.datetime.now() + datetime.timedelta(minutes=5)).strftime('%H:%M:%S')
+                
+                msg = f"💎 **MARKET SIGNAL**\nEntry Time: `{entry_time}`\nExp. Close: `{close_time}`\n━━━━━━━━━━━━━━\n"
+                for s in top_signals:
+                    msg += f"🔹 {s['pair']} → {s['dir']}\n   Price: `{s['price']:.5f}` | Win Prob: `{s['acc']}%`\n\n"
+                
+                await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
+            
+            await asyncio.sleep(60) # পরবর্তী ৫ মিনিটের জন্য ওয়েট
+        await asyncio.sleep(1)
 
 if __name__ == "__main__":
-    Thread(target=run_server, daemon=True).start()
-    asyncio.run(monitor())
+    asyncio.run(main())
